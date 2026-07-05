@@ -298,7 +298,7 @@ function render(){
         <div class="badge">${icon(l.action)}</div>
         <div class="info">
           <div class="name"><b>${l.action}</b> · ${l.count}个</div>
-          <div class="meta">${l.date} · ${fmtDur(l.duration_secs)} · ${Math.round(l.score||0)}分</div>
+          <div class="meta">${l.date} · ${fmtDur(l.duration_secs)}</div>
         </div>
         <button class="del" onclick="delItem(event,${l.id},'${l.date}','${l.action}')">删除</button>
         <span class="chev">▼</span>
