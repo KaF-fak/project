@@ -49,6 +49,10 @@
   .tbtn:hover{ background:rgba(255,255,255,.3); }
   .tbtn:active{ transform:scale(.95); }
   .tbtn.on{ background:#fff; color:var(--green-d); border-color:#fff; }
+  /* 清空按钮只在管理模式显示, 防误触 */
+  .tbtn.danger{ background:rgba(239,68,68,.28); border-color:rgba(255,255,255,.45); display:none; }
+  body.manage .tbtn.danger{ display:inline-block; }
+  .tbtn.danger:hover{ background:rgba(239,68,68,.5); }
 
   /* ══ 汇总卡 ══ */
   .summary{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0; }
@@ -156,6 +160,7 @@
 <body>
   <header>
     <div class="tools">
+      <button class="tbtn danger" onclick="delAll()">清空</button>
       <button class="tbtn" id="btnManage" onclick="toggleManage()">管理</button>
       <button class="tbtn" onclick="loadData()">刷新</button>
     </div>
@@ -214,8 +219,22 @@ function fmtDur(secs){
 function fmtClock(ts){
   if(!ts) return '';
   let n=Number(ts); if(n<1e12) n*=1000;   // 秒级时间戳转毫秒
+  // 板子时钟是"本地时间当UTC存"(无时区配置), 浏览器再按本地时区偏移会多加8小时,
+  // 故这里用 UTC 取时分秒, 显示的即板子上的真实本地时间
   const d=new Date(n), p=x=>String(x).padStart(2,'0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+/* 逐次明细归组: workout_log 没有 session_id, 但同步脚本每次"先传汇总行、紧跟着传该组逐次",
+ * 两者 created_at 相差仅几秒 —— 用 created_at 时间窗(±90s)+日期+动作 精确配对,
+ * 避免同一天多组同动作的明细互相串组 */
+const SESS_WIN_MS = 90*1000;
+function repsOfLog(l){
+  const t0 = Date.parse(l.created_at);
+  return reps.filter(r =>
+      r.date===l.date && r.action===l.action &&
+      Math.abs(Date.parse(r.created_at) - t0) <= SESS_WIN_MS)
+    .sort((a,b)=>(Number(a.ts)||0)-(Number(b.ts)||0));
 }
 function icon(action){ return action==='俯卧撑' ? '🤸' : action==='深蹲' ? '🏋️' : '💪'; }
 
@@ -250,13 +269,13 @@ function render(){
   }
 
   box.innerHTML = fl.map((l,i)=>{
-    // 逐次明细: 按 日期+动作 归组(无 session_id, 用 date+action 匹配)
-    const rs = reps.filter(r=>r.date===l.date && r.action===l.action)
-                   .sort((a,b)=>(a.seq||0)-(b.seq||0));
-    const detail = rs.length ? rs.map(r=>{
+    // 逐次明细: created_at 时间窗精确配对本组; 按发生时间排序, 序号=第几次尝试
+    // (数据里的 seq 对失败记录是"当时已计数值", 会重号/为0, 不能直接展示)
+    const rs = repsOfLog(l);
+    const detail = rs.length ? rs.map((r,idx)=>{
       const ok = r.result==='success';
       return `<div class="rep ${ok?'ok':'bad'}">
-        <span class="seq">第${r.seq}次</span>
+        <span class="seq">第${idx+1}次</span>
         <span class="tag">${ok?'标准':'未达标'}</span>
         <span class="reason">${ok?'':(r.reason||'')}</span>
         <span class="time">${fmtClock(r.ts)}</span>
@@ -297,20 +316,39 @@ async function delItem(ev, id, date, action){
   if(!confirm(`确定删除这条「${action}」记录吗?\n将同时删除它的逐次明细, 不可恢复`)) return;
   const btn = ev.target; btn.disabled = true; btn.textContent = '…';
 
+  const log = logs.find(l=>l.id===id);
   const ok = await sbDel(`workout_log?id=eq.${id}`);
   if(!ok){
     btn.disabled = false; btn.textContent = '删除';
     alert('删除失败: 云端未开放删除权限\n(需在 Supabase 加 DELETE 的 RLS 策略)');
     return;
   }
-  // 同步删除该组的逐次明细
-  await sbDel(`workout_reps?date=eq.${encodeURIComponent(date)}&action=eq.${encodeURIComponent(action)}`);
+  // 只删本组的逐次明细(按 id 精确删, 不误伤同一天其他组)
+  const own = log ? repsOfLog(log) : [];
+  if(own.length) await sbDel(`workout_reps?id=in.(${own.map(r=>r.id).join(',')})`);
 
   // 收起动画后再刷新本地数据
   const el = document.getElementById('item-'+id);
   if(el){ el.classList.add('removing'); await new Promise(r=>setTimeout(r,330)); }
+  const ownIds = new Set(own.map(r=>r.id));
   logs = logs.filter(l=>l.id!==id);
-  reps = reps.filter(r=>!(r.date===date && r.action===action));
+  reps = reps.filter(r=>!ownIds.has(r.id));
+  renderSummary();
+  render();
+}
+
+/* 一键清空: 删除云端全部训练记录 + 全部逐次明细(双重确认) */
+async function delAll(){
+  if(!logs.length && !reps.length){ alert('云端已经没有记录了'); return; }
+  if(!confirm(`确定清空全部记录吗?\n共 ${logs.length} 组训练、${reps.length} 条逐次明细`)) return;
+  if(!confirm('再次确认: 清空后不可恢复!')) return;
+  const ok1 = await sbDel('workout_log?id=gt.0');   // PostgREST 不允许无条件 DELETE, 用恒真过滤
+  const ok2 = await sbDel('workout_reps?id=gt.0');
+  if(!ok1 || !ok2){
+    alert('清空失败: 云端未开放删除权限\n(需在 Supabase 加 DELETE 的 RLS 策略)');
+    return;
+  }
+  logs = []; reps = [];
   renderSummary();
   render();
 }
