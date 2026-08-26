@@ -190,15 +190,55 @@
 const SB_URL = 'https://jwjyzhnpiflnrqaquvrp.supabase.co';
 const SB_KEY = 'sb_publishable_UMXycywoTqsxcG1lqBhm1Q_MDL7BjdH';
 
+/* 隐私加密解密密码: 必须与板子 sync_to_cloud.sh 里 SYNC_ENC_PASS 完全一致,
+ * 否则新记录(带 encrypted_payload)解不出来. 旧的明文记录(过渡期历史数据,
+ * 没有 encrypted_payload 字段)原样显示, 不受影响. */
+const ENC_PASS = '123456';
+
 let logs = [];      // 每组汇总 workout_log
 let reps = [];      // 逐次明细 workout_reps
 let manage = false; // 管理(删除)模式
+
+/* 解密单条 encrypted_payload (openssl enc -aes-256-cbc -pbkdf2 -iter 100000
+ * -salt -base64 产出的格式: base64解码后 = "Salted__"(8字节) + salt(8字节) + 密文).
+ * 返回解密后的 JSON 对象, 失败返回 null(不让一条坏数据炸掉整个列表). */
+async function decryptPayload(b64){
+  try{
+    const raw = Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
+    if(raw.length < 16 || new TextDecoder().decode(raw.slice(0,8)) !== 'Salted__')
+      return null;
+    const salt = raw.slice(8,16);
+    const ciphertext = raw.slice(16);
+    const passKey = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(ENC_PASS), 'PBKDF2', false, ['deriveBits']);
+    const keyIv = await crypto.subtle.deriveBits(
+      { name:'PBKDF2', salt, iterations:100000, hash:'SHA-256' },
+      passKey, (32+16)*8);
+    const keyIvBytes = new Uint8Array(keyIv);
+    const aesKey = await crypto.subtle.importKey(
+      'raw', keyIvBytes.slice(0,32), 'AES-CBC', false, ['decrypt']);
+    const plainBuf = await crypto.subtle.decrypt(
+      { name:'AES-CBC', iv:keyIvBytes.slice(32,48) }, aesKey, ciphertext);
+    return JSON.parse(new TextDecoder().decode(plainBuf));
+  }catch{ return null; }
+}
+
+/* 把一批行里的 encrypted_payload 解密并展开合并回原字段(与旧明文行同构,
+ * 渲染逻辑不用区分新旧). 没有 encrypted_payload 的行(历史明文数据)原样保留. */
+async function decryptRows(rows){
+  return Promise.all(rows.map(async row=>{
+    if(!row.encrypted_payload) return row;
+    const plain = await decryptPayload(row.encrypted_payload);
+    return plain ? { ...row, ...plain } : row;
+  }));
+}
 
 async function sbGet(path){
   try{
     const r = await fetch(`${SB_URL}/rest/v1/${path}`,
       { headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY } });
-    return r.ok ? await r.json() : [];
+    const rows = r.ok ? await r.json() : [];
+    return decryptRows(rows);
   }catch{ return []; }
 }
 async function sbDel(path){
