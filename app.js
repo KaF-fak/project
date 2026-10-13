@@ -164,9 +164,7 @@ function renderReplays() {
               r => `<article class="replay-card"><button class="replay-cover" data-play="${
                   esc(r.id)}" aria-label="播放 ${esc(r.date)} ${
                   esc(sessionTitle(
-                      r))}"><span class="cover-lines"></span><span class="cover-label">TRAINING ARCHIVE</span><span class="play-circle" aria-hidden="true">▷</span><span class="cover-number">No. ${
-                  String(r.id).slice(-8).padStart(
-                      3, '0')}</span><span class="cover-time">训练 ${
+                      r))}"><span class="cover-lines"></span><span class="cover-label">TRAINING ARCHIVE</span><span class="play-circle" aria-hidden="true">▷</span><span class="cover-time">训练 ${
                   duration(
                       r.duration_secs)}</span></button><div class="replay-content"><h3>${
                   esc(sessionTitle(r))}</h3><p>${
@@ -177,6 +175,7 @@ function renderReplays() {
           all.length ? '没有找到匹配的回放' : '还没有可播放的录像',
           '录像上传完成后会显示在这里；待上传的录像可在训练档案查看状态。');
   $('#more-replays').hidden = list.length <= state.replayLimit;
+  loadReplayPreviews();
 }
 function renderStats() {
   const r = state.records;
@@ -220,6 +219,68 @@ function renderStats() {
 }
 
 let session=null, generation=0, playGeneration=0;
+const rememberKey='sport-coach-session-v1';
+let tokenRefresh=null;
+function forgetDevice(){try{localStorage.removeItem(rememberKey);}catch(e){}}
+function saveDevice(s){
+  if(!s.rememberUntil)return;
+  try{localStorage.setItem(rememberKey,JSON.stringify(s));}
+  catch(e){s.rememberUntil=0;message('浏览器不允许保存登录信息，下次仍需登录。');}
+}
+async function renewSession(s){
+  if(s.expiresAt>Date.now()+60000)return;
+  if(!s.refreshToken)throw Error('登录已过期，请退出后重新登录');
+  if(tokenRefresh)return tokenRefresh;
+  const run=generation;
+  tokenRefresh=(async()=>{
+    const auth=await request({base:s.base,key:s.key},'/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:s.refreshToken})});
+    if(run!==generation||session!==s)throw Error('登录状态已改变');
+    if(!auth.access_token||!auth.refresh_token||auth.user?.id!==s.owner)throw Error('登录账号校验失败，请重新登录');
+    s.token=auth.access_token;s.refreshToken=auth.refresh_token;s.expiresAt=Date.now()+(Number(auth.expires_in)||3600)*1000;saveDevice(s);
+  })();
+  try{await tokenRefresh;}finally{tokenRefresh=null;}
+}
+let previewObserver=null, previewEpoch=0;
+const previewStops=new Set();
+function clearReplayPreviews(){
+  previewEpoch++;previewObserver?.disconnect();previewObserver=null;
+  for(const stop of [...previewStops])stop();
+  document.querySelectorAll('.replay-preview').forEach(video=>{video.removeAttribute('src');video.load();video.remove();});
+}
+async function replayURL(s,r){
+  const signed=await request(s,'/storage/v1/object/sign/training-replays/'+r.cloud_replay,{method:'POST',body:JSON.stringify({expiresIn:3600})});
+  if(typeof signed.signedURL!=='string')throw Error('视频地址缺失');
+  const url=new URL(signed.signedURL.startsWith('/storage/v1/')?signed.signedURL:'/storage/v1'+signed.signedURL,s.base);
+  if(url.origin!==s.base||!url.pathname.startsWith('/storage/v1/object/sign/training-replays/'))throw Error('视频地址不合法');
+  return url.href;
+}
+function loadReplayPreviews(){
+  clearReplayPreviews();if(!session)return;
+  const s=session,epoch=previewEpoch,run=generation,queue=[];let active=0;
+  const current=button=>epoch===previewEpoch&&run===generation&&button.isConnected;
+  async function load(button){
+    const r=state.records.find(x=>String(x.id)===button.dataset.play);if(!r?.replay_available)return;
+    try{
+      const url=await replayURL(s,r);if(!current(button))return;
+      await new Promise(resolve=>{
+        const video=document.createElement('video');video.className='replay-preview';video.muted=true;video.playsInline=true;video.preload='auto';video.tabIndex=-1;video.setAttribute('aria-hidden','true');
+        let done=false;const stop=()=>finish(false);
+        function finish(ready){if(done)return;done=true;clearTimeout(timer);previewStops.delete(stop);video.onloadeddata=video.onseeked=video.onerror=null;
+          if(ready&&current(button)){video.pause();button.classList.add('preview-ready');}
+          else{video.removeAttribute('src');video.load();video.remove();}
+          resolve();
+        }
+        const timer=setTimeout(()=>finish(false),15000);previewStops.add(stop);
+        video.onloadeddata=()=>{if(!current(button)){finish(false);return;}try{video.currentTime=0;}catch(e){finish(false);}};
+        video.onseeked=()=>finish(true);video.onerror=()=>finish(false);
+        button.prepend(video);video.src=url;video.load();
+      });
+    }catch(e){/* Keep the clean default cover; full playback can still be retried. */}
+  }
+  function pump(){if(epoch!==previewEpoch)return;while(active<2&&queue.length){active++;load(queue.shift()).finally(()=>{active--;pump();});}}
+  previewObserver=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting){previewObserver.unobserve(entry.target);queue.push(entry.target);}}pump();},{rootMargin:'100px'});
+  document.querySelectorAll('#replays .replay-cover').forEach(button=>previewObserver.observe(button));
+}
 async function decrypt(encoded,pass){
   const raw=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
   if(new TextDecoder().decode(raw.slice(0,8))!=='Salted__')throw Error('加密格式不匹配');
@@ -232,6 +293,10 @@ async function decrypt(encoded,pass){
   throw Error('记录解密失败，请核对口令');
 }
 async function request(s,path,options={}){
+  if(s===session){
+    if(s.rememberUntil&&Date.now()>=s.rememberUntil){forgetDevice();throw Error('记住设备已满 7 天，请退出后重新登录');}
+    await renewSession(s);
+  }
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
   try{
     const response=await fetch(s.base+path,{...options,signal:controller.signal,cache:'no-store',headers:{apikey:s.key,...(s.token?{Authorization:'Bearer '+s.token}:{}),'Content-Type':'application/json',...options.headers}});
@@ -293,12 +358,16 @@ $('#login-form').onsubmit=async e=>{
     const auth=await request({base,key},'/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email:$('#cloud-email').value.trim(),password:$('#cloud-password').value})});
     if(run!==generation)return;
     if(!auth.access_token||!auth.user?.id)throw Error('登录响应缺少账号信息');
-    session={base,key,token:auth.access_token,owner:auth.user.id,pass:$('#cloud-passphrase').value,legacy:$('#legacy-device').value.trim(),legacyPass:$('#legacy-passphrase').value||$('#cloud-passphrase').value};
+    forgetDevice();
+    session={base,key,token:auth.access_token,refreshToken:auth.refresh_token,expiresAt:Date.now()+(Number(auth.expires_in)||3600)*1000,rememberUntil:$('#remember-device').checked?Date.now()+7*86400000:0,owner:auth.user.id,pass:$('#cloud-passphrase').value,legacy:$('#legacy-device').value.trim(),legacyPass:$('#legacy-passphrase').value||$('#cloud-passphrase').value};
+    saveDevice(session);
     $('#cloud-login').hidden=true;$('#cloud-logout').hidden=false;state.busy=false;await refresh();
   }catch(e){if(run===generation)message(e.message);}
   finally{$('#cloud-password').value='';$('#cloud-passphrase').value='';$('#legacy-passphrase').value='';$('#cloud-submit').disabled=false;}
 };
 $('#cloud-logout').onclick=()=>{
+  forgetDevice();
+  clearReplayPreviews();
   generation++;playGeneration++;session=null;state.records=[];state.loaded=false;state.busy=false;
   $('#player').close();$('#video').removeAttribute('src');$('#video').load();$('#download').removeAttribute('href');
   for(const id of ['records','replays','metrics','activity'])$('#'+id).replaceChildren();
@@ -312,12 +381,10 @@ document.addEventListener('click',async e=>{
   const r=state.records.find(x=>String(x.id)===play.dataset.play);if(!r?.replay_available)return;
   const s=session,run=generation,playRun=++playGeneration;
   try{
-    const signed=await request(s,'/storage/v1/object/sign/training-replays/'+r.cloud_replay,{method:'POST',body:JSON.stringify({expiresIn:3600})});
+    const url=await replayURL(s,r);
     if(run!==generation||playRun!==playGeneration)return;
-    const url=new URL(signed.signedURL.startsWith('/storage/v1/')?signed.signedURL:'/storage/v1'+signed.signedURL,s.base);
-    if(url.origin!==s.base||!url.pathname.startsWith('/storage/v1/object/sign/training-replays/'))throw Error('视频地址不合法');
     $('#player-title').textContent=sessionTitle(r);$('#player-meta').textContent=`${r.date} · ${duration(r.duration_secs)}`;
-    $('#video-error').hidden=true;$('#video').src=url.href;$('#download').href=url.href;$('#download').download=`training_${r.id}.mp4`;
+    $('#video-error').hidden=true;$('#video').src=url;$('#download').href=url;$('#download').download=`training_${r.id}.mp4`;
     $('#player').showModal();$('#video').play().catch(()=>{});
   }catch(e){if(run===generation)message('回放加载失败：'+e.message);}
 });
@@ -331,3 +398,27 @@ function cloudRoute(){if(location.hash==='#devices')location.hash='#data';route(
 window.addEventListener('hashchange',cloudRoute);cloudRoute();
 $('#records').innerHTML=empty('登录后查看训练档案','已上传的记录不依赖板端在线。');
 $('#cloud-url').value=window.CLOUD_CONFIG?.url||'';$('#cloud-key').value=window.CLOUD_CONFIG?.key||'';
+async function restoreDevice(){
+  let saved;
+  try{saved=JSON.parse(localStorage.getItem(rememberKey)||'null');}catch(e){forgetDevice();return;}
+  if(!saved)return;
+  const configured=window.CLOUD_CONFIG?.url;
+  if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(saved.base)||
+     (configured&&saved.base!==configured)||!saved.refreshToken||typeof saved.pass!=='string'||
+     !Number.isFinite(saved.rememberUntil)||saved.rememberUntil<=Date.now()){
+    forgetDevice();return;
+  }
+  session=saved;const run=generation;
+  $('#cloud-login').hidden=true;$('#cloud-logout').hidden=false;$('#connection').textContent='正在恢复登录…';
+  try{
+    // Refresh on each reopening; don't rely on a stale cached access token.
+    session.expiresAt=0;await renewSession(session);
+    if(run!==generation)return;
+    await refresh();
+  }catch(e){
+    if(run!==generation)return;
+    session=null;$('#cloud-login').hidden=false;$('#cloud-logout').hidden=true;
+    $('#connection').textContent='自动登录未完成';message('自动登录失败，请检查网络或重新登录。');
+  }
+}
+restoreDevice();
