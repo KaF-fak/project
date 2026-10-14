@@ -87,30 +87,31 @@ function filtered(kind) {
             (new Date(String(r.date).replace(' ', 'T')) >= since));
   });
 }
+function groupScores(r, group) {
+  const reps=repDetails(r).map((p,index)=>({...p,index})).filter(p=>p.group===group);
+  return reps.length ? '<ol>'+reps.map(p=>
+    `<li>第${p.rep}次：<strong>${p.score>=0?p.score.toFixed(1)+'分':'无法评分'}</strong> ${r.replay_available&&p.start>=0&&p.end>p.start?
+      `<button class="button secondary" data-play="${esc(r.id)}" data-rep="${p.index}">回放此动作</button>`:
+      '<span class="muted">无可定位片段</span>'}</li>`).join('')+'</ol>' :
+    '<p class="muted">此组没有逐次评分记录。</p>';
+}
 function steps(r) {
-  const lines = String(r.details || '').trim().split('\n').filter(l=>l && !l.startsWith('@rep '));
-  if (!lines.length)
-    return '<p class="muted">这条记录未保存逐项动作明细。</p>';
-  const parsed = lines.map(
-      l => l.match(
-          /^\s*\d+\.\s*(.*?)\s+目标(\d+)(次|秒)\s+完成(\d+)(次|秒)\s*$/));
-  if (parsed.some(x => !x))
-    return `<div class="raw-details">${esc(lines.join('\n'))}</div>`;
-  return `<table class="step-table"><thead><tr><th>动作 / 环节</th><th>目标</th><th>实际完成</th><th>完成进度</th></tr></thead><tbody>${
-      parsed
-          .map(
-              m => `<tr><td>${esc(m[1])}</td><td>${m[2]} ${m[3]}</td><td>${
-                  m[4]} ${
-                  m[5]}</td><td><span class="step-progress" role="meter" aria-label="${
-                  esc(m[1])}完成比例" aria-valuenow="${
-                  Math.min(
-                      100,
-                      Math.round(
-                          num(m[4]) / Math.max(1, num(m[2])) *
-                          100))}" aria-valuemin="0" aria-valuemax="100"><span style="width:${
-                  Math.min(100, num(m[4]) / Math.max(1, num(m[2])) *
-                                    100)}%"></span></span></td></tr>`)
-          .join('')}</tbody></table>`;
+  const lines=String(r.details||'').trim().split('\n').filter(l=>l && !l.startsWith('@rep '));
+  const covered=new Set();
+  let html=lines.map(line=>{
+    const m=line.match(/^\s*(\d+)\.\s*(.*?)\s+(?:目标|计划)(\d+)(次|秒)\s+完成(\d+)(次|秒)\s*$/);
+    if(!m)return `<p class="raw-details">${esc(line)}</p>`;
+    const group=Number(m[1]);covered.add(group);
+    const title=`${m[1]}. ${m[2]}　目标${m[3]}${m[4]}　完成${m[5]}${m[6]}`;
+    return m[4]==='次' ? `<details class="rep-details" data-group="${group}"><summary>${esc(title)}</summary>${groupScores(r,group)}</details>` :
+      `<p class="step-rest">${esc(title)}</p>`;
+  }).join('');
+  for(const p of repDetails(r)){
+    if(covered.has(p.group))continue;
+    covered.add(p.group);
+    html+=`<details class="rep-details" data-group="${p.group}"><summary>第${p.group}组 · ${p.action===1?'深蹲':'俯卧撑'}</summary>${groupScores(r,p.group)}</details>`;
+  }
+  return html || '<p class="muted">此记录没有逐次评分和动作明细，仍可播放完整录像。</p>';
 }
 function renderData() {
   if (!state.loaded)
@@ -155,18 +156,11 @@ function repDetails(r) {
     return {group,action,rep,score,start,end};
   }).filter(Boolean);
 }
-function repPanel(r) {
-  const reps=repDetails(r);
-  return `<details class="rep-details"><summary>动作评分与分段回放（${reps.length}次）</summary>${reps.length?
-    `<p class="muted">按评分周期记录，可能与计数次数不同。点击回放仅播放所选动作。</p><ol>${reps.map((p,i)=>
-      `<li>第${p.group}组 · ${p.action===1?'深蹲':'俯卧撑'}第${p.rep}次：<strong>${p.score>=0?p.score.toFixed(1)+'分':'无法评分'}</strong> ${r.replay_available&&p.start>=0&&p.end>p.start?
-        `<button class="button secondary" data-play="${esc(r.id)}" data-rep="${i}">回放此动作</button>`:'<span class="muted">无可定位片段</span>'}</li>`).join('')}</ol>`:
-    '<p class="muted">此记录没有逐次评分和时间段，仍可播放完整录像。</p>'}</details>`;
-}
+function repPanel(r) { return steps(r); }
 function similarityCard(r) {
   const score=r.similarity_score;
   const valid=typeof score==='number' && Number.isFinite(score) && score>=0 && score<=100 && num(r.similarity_reps)>0;
-  return `<section class="similarity-card"><h3>总评分</h3><strong>${valid ? `${score.toFixed(1)}分` : '评分 --'}</strong><p>${valid ? `基于 ${num(r.similarity_reps)} 次有效动作评分。${num(r.similarity_fusion)>0?'含节点融合':'视觉评分'}` : '本次没有有效评分。'}</p></section>${repPanel(r)}`;
+  return `<section class="similarity-card"><h3>总评分</h3><strong>${valid ? `${score.toFixed(1)}分` : '评分 --'}</strong><p>${valid ? `基于 ${num(r.similarity_reps)} 次有效动作评分。` : '本次没有有效评分。'}</p></section>`;
 }
 function renderReplays() {
   if (!state.loaded)
@@ -392,6 +386,16 @@ $('#cloud-logout').onclick=()=>{
   $('#cloud-password').value='';$('#cloud-passphrase').value='';$('#legacy-passphrase').value='';
   $('#cloud-login').hidden=false;$('#cloud-logout').hidden=true;$('#connection').textContent='已退出';$('#connection').className='connection';$('#updated').textContent='等待登录';message('');
 };
+function clipBounds(r, index, duration) {
+  const reps=repDetails(r), clip=reps[index];
+  if(!clip || clip.start<0 || clip.end<=clip.start || !Number.isFinite(duration) || clip.start>=duration)return null;
+  // Keep a settling tail after the scoring cycle. Never include the next
+  // complete repetition or seek beyond the available recording.
+  const next=reps.slice(index+1).find(p=>p.start>=clip.end && p.end>p.start);
+  let end=Math.min(clip.end+1.0,duration);
+  if(next)end=Math.min(end,Math.max(clip.end,next.end-0.05));
+  return {start:clip.start,end};
+}
 let activeClip=null,clipFrame=0,clipTimer=0;
 function stopClipWatch(){cancelAnimationFrame(clipFrame);clearInterval(clipTimer);clipTimer=0;clipFrame=0;activeClip=null;}
 function watchClip(){
@@ -439,9 +443,10 @@ document.addEventListener('click',async e=>{
         if(!Number.isFinite(video.duration)||clip.start>=video.duration){
           $('#video-error').textContent='动作时间段超出录像范围，请播放完整录像。';$('#video-error').hidden=false;return;
         }
-        activeClip={start:clip.start,end:Math.min(clip.end,video.duration)};
+        activeClip=clipBounds(r,Number(index),video.duration);
+        if(!activeClip)return;
         video.currentTime=activeClip.start;
-        $('#player-meta').textContent=`${r.date} · 第${clip.group}组第${clip.rep}次 · ${clip.start.toFixed(1)}–${clip.end.toFixed(1)}秒`;
+        $('#player-meta').textContent=`${r.date} · 第${clip.group}组第${clip.rep}次 · ${activeClip.start.toFixed(1)}–${activeClip.end.toFixed(1)}秒`;
       }
       video.play().catch(()=>{});
     };
