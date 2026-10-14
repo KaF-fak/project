@@ -129,7 +129,7 @@ function renderData() {
                       : ''}><summary><span class="record-icon" aria-hidden="true">▤</span><div class="record-title"><h3>${
                   esc(sessionTitle(r))}</h3><p>${esc(r.date)} · NO. ${
                   esc(String(r.id).slice(-8))}</p></div><div class="record-stat">${
-                  num(r.count)} 次<small>示范播放 / 旧版计数</small></div><div class="record-stat">${
+                  num(r.count)} 次<small>示范播放</small></div><div class="record-stat">${
                   duration(
                       r.duration_secs)}<small>训练时长</small></div><span class="record-arrow" aria-hidden="true">⌄</span></summary><div class="record-body"><h3>本次训练明细</h3>${
                   similarityCard(r)}${steps(r)}<div class="record-bottom"><span>${
@@ -195,7 +195,7 @@ function renderStats() {
     [ '累计训练', r.length, '次', '每一次坚持，都值得记录' ],
     [ '累计时长', mins.toFixed(1), '分钟', '来自已保存的训练' ],
     [
-      '示范播放 / 旧版计数', r.reduce((s, x) => s + num(x.count), 0), '次',
+      '示范播放', r.reduce((s, x) => s + num(x.count), 0), '次',
       '逐次积累，慢慢进步'
     ],
     [
@@ -394,7 +394,7 @@ function clipBounds(r, index, duration) {
   const next=reps.slice(index+1).find(p=>p.start>=clip.end && p.end>p.start);
   let end=Math.min(clip.end+1.0,duration);
   if(next)end=Math.min(end,Math.max(clip.end,next.end-0.05));
-  return {start:clip.start,end};
+  return {start:Math.max(0,clip.start-1.0),end};
 }
 let activeClip=null,clipFrame=0,clipTimer=0;
 function stopClipWatch(){cancelAnimationFrame(clipFrame);clearInterval(clipTimer);clipTimer=0;clipFrame=0;activeClip=null;}
