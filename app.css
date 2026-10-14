@@ -5,6 +5,6 @@
 
 .cloud-form{display:grid;gap:16px;max-width:600px}.cloud-form label{display:grid;gap:6px}.cloud-form input{width:100%;min-width:0;padding:12px;border:1px solid #cbd6cd;border-radius:8px;font:inherit}#cloud-login{margin-bottom:24px}#cloud-logout{margin-bottom:20px}
 
-#cloud-login{padding:24px}.similarity-card{margin:14px 0;padding:16px;background:#f2f6ed;border-radius:10px}.similarity-card strong{display:block;font-size:24px;color:#254f39;margin:8px 0}.similarity-card p{font-size:12px}.similarity-card small{display:block;color:#778279;margin-top:8px}.record-title p{overflow-wrap:anywhere}@media(max-width:760px){.sidebar{bottom:auto}.cover-number{font-size:12px}}
+#cloud-login{padding:24px}.record-title p{overflow-wrap:anywhere}@media(max-width:760px){.sidebar{bottom:auto}.cover-number{font-size:12px}}
 
 .replay-cover{position:relative;isolation:isolate}.replay-cover .replay-preview{position:absolute;inset:0;width:100%;height:100%;max-height:none;object-fit:cover;border-radius:0;pointer-events:none;opacity:0}.replay-cover.preview-ready .replay-preview{opacity:1}.replay-cover.preview-ready .cover-lines{opacity:0}.replay-cover.preview-ready .cover-label{color:white;text-shadow:0 1px 4px #000}.replay-cover .play-circle,.replay-cover .cover-label,.replay-cover .cover-time{z-index:2}.replay-cover.preview-ready:after{content:"";position:absolute;inset:0;background:linear-gradient(#0003,transparent 50%,#0004);z-index:1;pointer-events:none}

@@ -90,13 +90,13 @@ function filtered(kind) {
 function groupScores(r, group) {
   const reps=repDetails(r).map((p,index)=>({...p,index})).filter(p=>p.group===group);
   return reps.length ? '<ol>'+reps.map(p=>
-    `<li>第${p.rep}次：<strong>${p.score>=0?p.score.toFixed(1)+'分':'无法评分'}</strong> ${r.replay_available&&p.start>=0&&p.end>p.start?
+    `<li>第${p.rep}次：<strong>${p.standard===1?'标准':p.standard===0?'纠错':'未记录判定'}</strong>${p.standard===0&&p.reason?' · '+esc(p.reason):''} ${r.replay_available&&p.start>=0&&p.end>p.start?
       `<button class="button secondary" data-play="${esc(r.id)}" data-rep="${p.index}">回放此动作</button>`:
       '<span class="muted">无可定位片段</span>'}</li>`).join('')+'</ol>' :
-    '<p class="muted">此组没有逐次评分记录。</p>';
+    '<p class="muted">此组没有逐次动作记录。</p>';
 }
 function steps(r) {
-  const lines=String(r.details||'').trim().split('\n').filter(l=>l && !l.startsWith('@rep '));
+  const lines=String(r.details||'').trim().split('\n').filter(l=>l && !l.startsWith('@rep ')&&!l.startsWith('@action '));
   const covered=new Set();
   let html=lines.map(line=>{
     const m=line.match(/^\s*(\d+)\.\s*(.*?)\s+(?:目标|计划)(\d+)(次|秒)\s+完成(\d+)(次|秒)\s*$/);
@@ -111,7 +111,7 @@ function steps(r) {
     covered.add(p.group);
     html+=`<details class="rep-details" data-group="${p.group}"><summary>第${p.group}组 · ${p.action===1?'深蹲':'俯卧撑'}</summary>${groupScores(r,p.group)}</details>`;
   }
-  return html || '<p class="muted">此记录没有逐次评分和动作明细，仍可播放完整录像。</p>';
+  return html || '<p class="muted">此记录没有逐次动作明细，仍可播放完整录像。</p>';
 }
 function renderData() {
   if (!state.loaded)
@@ -129,10 +129,10 @@ function renderData() {
                       : ''}><summary><span class="record-icon" aria-hidden="true">▤</span><div class="record-title"><h3>${
                   esc(sessionTitle(r))}</h3><p>${esc(r.date)} · NO. ${
                   esc(String(r.id).slice(-8))}</p></div><div class="record-stat">${
-                  num(r.count)} 次<small>示范播放</small></div><div class="record-stat">${
+                  num(r.count)} 次<small>总次数</small></div><div class="record-stat">${
                   duration(
                       r.duration_secs)}<small>训练时长</small></div><span class="record-arrow" aria-hidden="true">⌄</span></summary><div class="record-body"><h3>本次训练明细</h3>${
-                  similarityCard(r)}${steps(r)}<div class="record-bottom"><span>${
+                  steps(r)}<div class="record-bottom"><span>${
                   r.replay_available ? '回放已上传云端'
                   : r.replay_state === 'pending' ? '回放待上传' : r.replay_state === 'missing' ? '板端录像暂不可用，等待补传' : r.replay_path ? '录像尚未上传'
                                      : '本次未保存录像'}</span>${
@@ -148,20 +148,24 @@ function renderData() {
   $('#more-data').hidden = list.length <= state.dataLimit;
 }
 function repDetails(r) {
-  return String(r.details||'').split('\n').filter(l=>l.startsWith('@rep ')).map(l=>{
-    const fields=l.trim().split(/\s+/);if(fields.length!==7)return null;
-    const [group,action,rep,score,start,end]=fields.slice(1).map(Number);
+  return String(r.details||'').split('\n').filter(l=>l.startsWith('@rep ')||l.startsWith('@action ')).map(l=>{
+    if(l.startsWith('@action ')){
+      const m=l.match(/^@action\s+(\d+)\s+([12])\s+(\d+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?\d+)(?:\s+(.*))?$/);
+      if(!m)return null;
+      const [group,action,rep,start,end,standard]=m.slice(1,7).map(Number);
+      if(![group,action,rep,start,end,standard].every(Number.isFinite)||group<1||group>8||rep<1||![-1,0,1].includes(standard))return null;
+      return {group,action,rep,start,end,standard,reason:m[7]||''};
+    }
+    const fields=l.trim().split(/\s+/);if(fields.length!==7&&fields.length!==8)return null;
+    const [group,action,rep,score,start,end]=fields.slice(1,7).map(Number);
+    const standard=fields.length===8?Number(fields[7]):-1;
+    if(![-1,0,1].includes(standard))return null;
     if(![group,action,rep,score,start,end].every(Number.isFinite)||!Number.isInteger(group)||group<1||group>8||
        ![1,2].includes(action)||!Number.isInteger(rep)||rep<1||score < -1||score>100)return null;
-    return {group,action,rep,score,start,end};
+    return {group,action,rep,start,end,standard,reason:''};
   }).filter(Boolean);
 }
 function repPanel(r) { return steps(r); }
-function similarityCard(r) {
-  const score=r.similarity_score;
-  const valid=typeof score==='number' && Number.isFinite(score) && score>=0 && score<=100 && num(r.similarity_reps)>0;
-  return `<section class="similarity-card"><h3>总评分</h3><strong>${valid ? `${score.toFixed(1)}分` : '评分 --'}</strong><p>${valid ? `基于 ${num(r.similarity_reps)} 次有效动作评分。` : '本次没有有效评分。'}</p></section>`;
-}
 function renderReplays() {
   if (!state.loaded)
     return;
@@ -180,7 +184,7 @@ function renderReplays() {
                       r.duration_secs)}</span></button><div class="replay-content"><h3>${
                   esc(sessionTitle(r))}</h3><p>${
                   esc(r.date)}</p><div class="replay-foot"><span>${
-                  num(r.count)} 次播放 / 计数</span><span>查看回放 ↗</span></div>${repPanel(r)}</div></article>`)
+                  num(r.count)} 次 · 总次数</span><span>查看回放 ↗</span></div>${repPanel(r)}</div></article>`)
           .join('') ||
       empty(
           all.length ? '没有找到匹配的回放' : '还没有可播放的录像',
@@ -195,7 +199,7 @@ function renderStats() {
     [ '累计训练', r.length, '次', '每一次坚持，都值得记录' ],
     [ '累计时长', mins.toFixed(1), '分钟', '来自已保存的训练' ],
     [
-      '示范播放', r.reduce((s, x) => s + num(x.count), 0), '次',
+      '总次数', r.reduce((s, x) => s + num(x.count), 0), '次',
       '逐次积累，慢慢进步'
     ],
     [
@@ -342,7 +346,7 @@ async function refresh(){
         const old=await allRows(s,'workout_log',`select=*&device_id=eq.${encodeURIComponent(s.legacy)}&order=id.desc`);
         for(const row of old){try{
           const r=row.encrypted_payload?await decrypt(row.encrypted_payload,s.legacyPass):row;
-          records.push({...r,id:'legacy-'+row.id,replay_available:false,replay_state:'none',cloud_replay:'',similarity_score:null,similarity_reps:0});
+          records.push({...r,id:'legacy-'+row.id,replay_available:false,replay_state:'none',cloud_replay:''});
         }catch(e){failed++;}}
       }catch(e){notices.push('旧版历史读取失败，请检查旧设备编号及表权限');}
     }
