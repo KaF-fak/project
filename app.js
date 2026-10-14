@@ -88,14 +88,14 @@ function filtered(kind) {
   });
 }
 function steps(r) {
-  const lines = String(r.details || '').trim().split('\n').filter(Boolean);
+  const lines = String(r.details || '').trim().split('\n').filter(l=>l && !l.startsWith('@rep '));
   if (!lines.length)
     return '<p class="muted">这条记录未保存逐项动作明细。</p>';
   const parsed = lines.map(
       l => l.match(
           /^\s*\d+\.\s*(.*?)\s+目标(\d+)(次|秒)\s+完成(\d+)(次|秒)\s*$/));
   if (parsed.some(x => !x))
-    return `<div class="raw-details">${esc(r.details)}</div>`;
+    return `<div class="raw-details">${esc(lines.join('\n'))}</div>`;
   return `<table class="step-table"><thead><tr><th>动作 / 环节</th><th>目标</th><th>实际完成</th><th>完成进度</th></tr></thead><tbody>${
       parsed
           .map(
@@ -146,10 +146,27 @@ function renderData() {
                 : '训练保存并上传成功后，记录会出现在这里。');
   $('#more-data').hidden = list.length <= state.dataLimit;
 }
+function repDetails(r) {
+  return String(r.details||'').split('\n').filter(l=>l.startsWith('@rep ')).map(l=>{
+    const fields=l.trim().split(/\s+/);if(fields.length!==7)return null;
+    const [group,action,rep,score,start,end]=fields.slice(1).map(Number);
+    if(![group,action,rep,score,start,end].every(Number.isFinite)||!Number.isInteger(group)||group<1||group>8||
+       ![1,2].includes(action)||!Number.isInteger(rep)||rep<1||score < -1||score>100)return null;
+    return {group,action,rep,score,start,end};
+  }).filter(Boolean);
+}
+function repPanel(r) {
+  const reps=repDetails(r);
+  return `<details class="rep-details"><summary>动作评分与分段回放（${reps.length}次）</summary>${reps.length?
+    `<p class="muted">按评分周期记录，可能与计数次数不同。点击回放仅播放所选动作。</p><ol>${reps.map((p,i)=>
+      `<li>第${p.group}组 · ${p.action===1?'深蹲':'俯卧撑'}第${p.rep}次：<strong>${p.score>=0?p.score.toFixed(1)+'分':'无法评分'}</strong> ${r.replay_available&&p.start>=0&&p.end>p.start?
+        `<button class="button secondary" data-play="${esc(r.id)}" data-rep="${i}">回放此动作</button>`:'<span class="muted">无可定位片段</span>'}</li>`).join('')}</ol>`:
+    '<p class="muted">此记录没有逐次评分和时间段，仍可播放完整录像。</p>'}</details>`;
+}
 function similarityCard(r) {
   const score=r.similarity_score;
   const valid=typeof score==='number' && Number.isFinite(score) && score>=0 && score<=100 && num(r.similarity_reps)>0;
-  return `<section class="similarity-card"><h3>跟练相似度</h3><strong>${valid ? `${score.toFixed(1)}% · ${score.toFixed(1)}分` : '未评分'}</strong><p>${valid ? `基于 ${num(r.similarity_reps)} 次有效动作，与示范视频按动作阶段对齐比较。${num(r.similarity_fusion)>0 ? `融合参与帧占比 ${Math.min(100,num(r.similarity_fusion)).toFixed(1)}%` : '视觉评分（无有效 IMU 融合）'}` : '本次没有可用的完整动作评分，或属于尚未评分的旧记录。'}</p><small>相似度不等于医学评估或动作正确率；遮挡、视角和模板都会影响结果。</small></section>`;
+  return `<section class="similarity-card"><h3>总评分</h3><strong>${valid ? `${score.toFixed(1)}分` : '评分 --'}</strong><p>${valid ? `基于 ${num(r.similarity_reps)} 次有效动作评分。${num(r.similarity_fusion)>0?'含节点融合':'视觉评分'}` : '本次没有有效评分。'}</p></section>${repPanel(r)}`;
 }
 function renderReplays() {
   if (!state.loaded)
@@ -169,7 +186,7 @@ function renderReplays() {
                       r.duration_secs)}</span></button><div class="replay-content"><h3>${
                   esc(sessionTitle(r))}</h3><p>${
                   esc(r.date)}</p><div class="replay-foot"><span>${
-                  num(r.count)} 次播放 / 计数</span><span>查看回放 ↗</span></div></div></article>`)
+                  num(r.count)} 次播放 / 计数</span><span>查看回放 ↗</span></div>${repPanel(r)}</div></article>`)
           .join('') ||
       empty(
           all.length ? '没有找到匹配的回放' : '还没有可播放的录像',
@@ -375,20 +392,63 @@ $('#cloud-logout').onclick=()=>{
   $('#cloud-password').value='';$('#cloud-passphrase').value='';$('#legacy-passphrase').value='';
   $('#cloud-login').hidden=false;$('#cloud-logout').hidden=true;$('#connection').textContent='已退出';$('#connection').className='connection';$('#updated').textContent='等待登录';message('');
 };
+let activeClip=null,clipFrame=0,clipTimer=0;
+function stopClipWatch(){cancelAnimationFrame(clipFrame);clearInterval(clipTimer);clipTimer=0;clipFrame=0;activeClip=null;}
+function watchClip(){
+  cancelAnimationFrame(clipFrame);
+  const video=$('#video');
+  if(!activeClip)return;
+  if(video.currentTime>=activeClip.end){
+    video.pause();clearInterval(clipTimer);clipTimer=0;
+    if(video.currentTime>activeClip.end)video.currentTime=activeClip.end;
+    return;
+  }
+  if(!video.paused)clipFrame=requestAnimationFrame(watchClip);
+}
+$('#video').addEventListener('timeupdate',watchClip);
+$('#video').addEventListener('play',()=>{
+  clearInterval(clipTimer);
+  if(activeClip)clipTimer=setInterval(watchClip,20);
+  if(activeClip&&($('#video').currentTime>=activeClip.end||$('#video').currentTime<activeClip.start))
+    $('#video').currentTime=activeClip.start;
+  watchClip();
+});
+$('#video').addEventListener('pause',()=>{clearInterval(clipTimer);clipTimer=0;});
+$('#video').addEventListener('seeked',()=>{
+  if(activeClip&&$('#video').currentTime<activeClip.start)$('#video').currentTime=activeClip.start;
+  if(activeClip&&$('#video').currentTime>=activeClip.end)$('#video').pause();
+});
 document.addEventListener('click',async e=>{
   const close=e.target.closest('[data-close]');if(close)$('#'+close.dataset.close).close();
   const play=e.target.closest('[data-play]');if(!play||!session)return;
   const r=state.records.find(x=>String(x.id)===play.dataset.play);if(!r?.replay_available)return;
   const s=session,run=generation,playRun=++playGeneration;
+  stopClipWatch();$('#video').pause();$('#video').onloadedmetadata=null;
+  const index=play.dataset.rep;
+  const clip=index===undefined?null:repDetails(r)[Number(index)];
+  if(index!==undefined&&(!clip||clip.start<0||clip.end<=clip.start))return;
   try{
     const url=await replayURL(s,r);
     if(run!==generation||playRun!==playGeneration)return;
     $('#player-title').textContent=sessionTitle(r);$('#player-meta').textContent=`${r.date} · ${duration(r.duration_secs)}`;
     $('#video-error').hidden=true;$('#video').src=url;$('#download').href=url;$('#download').download=`training_${r.id}.mp4`;
-    $('#player').showModal();$('#video').play().catch(()=>{});
+    $('#video').onloadedmetadata=()=>{
+      if(run!==generation||playRun!==playGeneration)return;
+      const video=$('#video');
+      if(clip){
+        if(!Number.isFinite(video.duration)||clip.start>=video.duration){
+          $('#video-error').textContent='动作时间段超出录像范围，请播放完整录像。';$('#video-error').hidden=false;return;
+        }
+        activeClip={start:clip.start,end:Math.min(clip.end,video.duration)};
+        video.currentTime=activeClip.start;
+        $('#player-meta').textContent=`${r.date} · 第${clip.group}组第${clip.rep}次 · ${clip.start.toFixed(1)}–${clip.end.toFixed(1)}秒`;
+      }
+      video.play().catch(()=>{});
+    };
+    if(!$('#player').open)$('#player').showModal();
   }catch(e){if(run===generation)message('回放加载失败：'+e.message);}
 });
-$('#player').addEventListener('close',()=>{playGeneration++;$('#video').pause();$('#video').removeAttribute('src');$('#video').load();$('#download').removeAttribute('href');});
+$('#player').addEventListener('close',()=>{playGeneration++;stopClipWatch();$('#video').onloadedmetadata=null;$('#video').pause();$('#video').removeAttribute('src');$('#video').load();$('#download').removeAttribute('href');});
 $('#video').addEventListener('error',()=>{if(!$('#video').getAttribute('src'))return;$('#video-error').textContent='回放无法播放，请重新打开以刷新授权链接；也可下载检查视频格式。';$('#video-error').hidden=false;});
 for(const id of ['data-search','data-period','data-action'])$('#'+id).addEventListener('input',()=>{state.dataLimit=12;renderData();});
 for(const id of ['replay-search','replay-period'])$('#'+id).addEventListener('input',()=>{state.replayLimit=12;renderReplays();});
